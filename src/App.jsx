@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { HashRouter, Routes, Route } from 'react-router-dom'
 import { UserProvider } from './context/UserContext'
 import NavBar       from './components/NavBar'
 import TrailBrowser from './pages/TrailBrowser'
@@ -8,7 +8,7 @@ import AdminSync    from './pages/AdminSync'
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <UserProvider>
         <NavBar />
         <Routes>
@@ -18,6 +18,6 @@ export default function App() {
           <Route path="/admin"      element={<AdminSync />} />
         </Routes>
       </UserProvider>
-    </BrowserRouter>
+    </HashRouter>
   )
 }
