@@ -5,6 +5,20 @@ const ADMIN_TOKEN = import.meta.env.VITE_ADMIN_TOKEN
 const SHEET_ID    = import.meta.env.VITE_SHEET_ID
 const SHEETS_KEY  = import.meta.env.VITE_SHEETS_API_KEY
 
+const STORAGE_BUCKET = 'trail-photos'
+
+// "Cañón del Cauca (Mirador Trail)" → "cañón-del-cauca-mirador-trail"
+// Matches how the trail photo files are named (lowercase, accents kept,
+// punctuation stripped, spaces → hyphens).
+function slugify(s) {
+  return (s ?? '')
+    .toLowerCase()
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}\s-]/gu, '') // keep letters (incl. accents), digits, spaces, hyphens
+    .trim()
+    .replace(/\s+/g, '-')
+}
+
 // "12 km / 6-7 hours" → 12
 function parseDistanceKm(raw) {
   const m = (raw ?? '').match(/([\d.]+)\s*km/i)
@@ -50,8 +64,28 @@ function rowToTrail(headers, row) {
     description:            get('Description') || null,
     youtube_link:           get('YouTube Search Link') || null,
     photo_link:             get('Photo Search Link') || null,
-    photo_url:              get('Photo URL') || null,
+    // photo_url is derived from the Storage bucket at sync time, not the sheet.
   }
+}
+
+// List the trail-photos bucket and build a { slug → public URL } map.
+// Only photos that actually exist get linked, so missing-photo trails
+// keep photo_url = null instead of pointing at a broken URL.
+async function buildPhotoMap() {
+  const { data: files, error } = await supabase
+    .storage.from(STORAGE_BUCKET)
+    .list('', { limit: 1000 })
+
+  if (error) throw new Error(`Storage list: ${error.message}`)
+
+  const map = {}
+  for (const f of files ?? []) {
+    if (!f.name || !f.name.includes('.')) continue // skip folders/placeholders
+    const stem = f.name.replace(/\.[^.]+$/, '')
+    const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(f.name)
+    map[slugify(stem)] = data.publicUrl
+  }
+  return map
 }
 
 async function syncSheets(setPhase, setResult) {
@@ -91,6 +125,22 @@ async function syncSheets(setPhase, setResult) {
   const dataRows = rows.slice(1).filter(r => r[0]?.trim())
   const trails   = dataRows.map(r => rowToTrail(headers, r)).filter(t => t.route_name)
 
+  // Derive photo_url for each trail from the Storage bucket.
+  setPhase('photos')
+  let matched = 0
+  try {
+    const photoMap = await buildPhotoMap()
+    for (const t of trails) {
+      const url = photoMap[slugify(t.route_name)] ?? null
+      t.photo_url = url
+      if (url) matched++
+    }
+  } catch (err) {
+    setPhase('error')
+    setResult(err.message)
+    return
+  }
+
   setPhase('upserting')
 
   const { error } = await supabase
@@ -104,14 +154,14 @@ async function syncSheets(setPhase, setResult) {
   }
 
   setPhase('done')
-  setResult(trails.length)
+  setResult({ trails: trails.length, photos: matched })
 }
 
 export default function AdminSync() {
   const params  = new URLSearchParams(window.location.search)
   const isAdmin = ADMIN_TOKEN && params.get('admin') === ADMIN_TOKEN
 
-  const [phase,  setPhase]  = useState('idle')   // idle | fetching | upserting | done | error
+  const [phase,  setPhase]  = useState('idle')   // idle | fetching | photos | upserting | done | error
   const [result, setResult] = useState(null)
 
   if (!isAdmin) {
@@ -122,11 +172,12 @@ export default function AdminSync() {
     )
   }
 
-  const busy = phase === 'fetching' || phase === 'upserting'
+  const busy = phase === 'fetching' || phase === 'photos' || phase === 'upserting'
 
   const phaseLabel = {
     idle:      'Sync from Google Sheets',
     fetching:  'Fetching sheet…',
+    photos:    'Matching photos…',
     upserting: 'Upserting to Supabase…',
     done:      'Sync from Google Sheets',
     error:     'Sync from Google Sheets',
@@ -157,7 +208,8 @@ export default function AdminSync() {
 
         {phase === 'done' && (
           <p className="font-mono text-sm text-trail-amber">
-            ✓ {result} trail{result !== 1 ? 's' : ''} upserted.
+            ✓ {result.trails} trail{result.trails !== 1 ? 's' : ''} upserted ·{' '}
+            {result.photos} with photo{result.photos !== 1 ? 's' : ''}.
           </p>
         )}
 
