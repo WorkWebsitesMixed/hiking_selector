@@ -153,15 +153,54 @@ async function syncSheets(setPhase, setResult) {
     return
   }
 
+  // Prune trails that are no longer in the sheet. Trails with logged
+  // completions are kept (the completions FK blocks their deletion) and
+  // reported back so removed-but-completed trails don't vanish silently.
+  setPhase('pruning')
+  let removed = 0
+  let keptCompleted = 0
+  try {
+    const keepNames = new Set(trails.map(t => t.route_name))
+
+    const { data: existing, error: exErr } = await supabase
+      .from('trails').select('id, route_name')
+    if (exErr) throw new Error(`Prune (list): ${exErr.message}`)
+
+    const orphanIds = (existing ?? [])
+      .filter(t => !keepNames.has(t.route_name))
+      .map(t => t.id)
+
+    if (orphanIds.length) {
+      const { data: comps, error: cErr } = await supabase
+        .from('completions').select('trail_id').in('trail_id', orphanIds)
+      if (cErr) throw new Error(`Prune (completions): ${cErr.message}`)
+
+      const completedIds = new Set((comps ?? []).map(c => c.trail_id))
+      const deletable = orphanIds.filter(id => !completedIds.has(id))
+      keptCompleted = orphanIds.length - deletable.length
+
+      if (deletable.length) {
+        const { error: dErr } = await supabase
+          .from('trails').delete().in('id', deletable)
+        if (dErr) throw new Error(`Prune (delete): ${dErr.message}`)
+        removed = deletable.length
+      }
+    }
+  } catch (err) {
+    setPhase('error')
+    setResult(err.message)
+    return
+  }
+
   setPhase('done')
-  setResult({ trails: trails.length, photos: matched })
+  setResult({ trails: trails.length, photos: matched, removed, keptCompleted })
 }
 
 export default function AdminSync() {
   const params  = new URLSearchParams(window.location.search)
   const isAdmin = ADMIN_TOKEN && params.get('admin') === ADMIN_TOKEN
 
-  const [phase,  setPhase]  = useState('idle')   // idle | fetching | photos | upserting | done | error
+  const [phase,  setPhase]  = useState('idle')   // idle | fetching | photos | upserting | pruning | done | error
   const [result, setResult] = useState(null)
 
   if (!isAdmin) {
@@ -172,13 +211,15 @@ export default function AdminSync() {
     )
   }
 
-  const busy = phase === 'fetching' || phase === 'photos' || phase === 'upserting'
+  const busy = phase === 'fetching' || phase === 'photos' ||
+               phase === 'upserting' || phase === 'pruning'
 
   const phaseLabel = {
     idle:      'Sync from Google Sheets',
     fetching:  'Fetching sheet…',
     photos:    'Matching photos…',
     upserting: 'Upserting to Supabase…',
+    pruning:   'Removing deleted trails…',
     done:      'Sync from Google Sheets',
     error:     'Sync from Google Sheets',
   }[phase]
@@ -207,10 +248,20 @@ export default function AdminSync() {
         </button>
 
         {phase === 'done' && (
-          <p className="font-mono text-sm text-trail-amber">
-            ✓ {result.trails} trail{result.trails !== 1 ? 's' : ''} upserted ·{' '}
-            {result.photos} with photo{result.photos !== 1 ? 's' : ''}.
-          </p>
+          <div className="font-mono text-sm text-trail-amber space-y-1">
+            <p>
+              ✓ {result.trails} trail{result.trails !== 1 ? 's' : ''} upserted ·{' '}
+              {result.photos} with photo{result.photos !== 1 ? 's' : ''}.
+            </p>
+            {result.removed > 0 && (
+              <p>– {result.removed} removed (no longer in sheet).</p>
+            )}
+            {result.keptCompleted > 0 && (
+              <p className="text-warm-white/40">
+                {result.keptCompleted} not removed — already completed by someone.
+              </p>
+            )}
+          </div>
         )}
 
         {phase === 'error' && (
