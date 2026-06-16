@@ -8,14 +8,17 @@ const SHEETS_KEY  = import.meta.env.VITE_SHEETS_API_KEY
 
 const STORAGE_BUCKET = 'trail-photos'
 
-// "Cañón del Cauca (Mirador Trail)" → "cañón-del-cauca-mirador-trail"
-// Matches how the trail photo files are named (lowercase, accents kept,
-// punctuation stripped, spaces → hyphens).
+// "Cañón del Cauca (Mirador Trail)" → "canon-del-cauca-mirador-trail"
+// Matches how the trail photo files are named. Diacritics are stripped
+// because Supabase Storage object keys reject accented characters, so
+// uploaded files lose their tildes (e.g. "Citará" → "citara"). Stripping
+// on both the route name and the filename keeps the two sides aligned.
 function slugify(s) {
   return (s ?? '')
+    .normalize('NFD')                       // split accented letters into base + combining mark
+    .replace(/[\u0300-\u036f]/g, '')        // drop the combining marks (tildes, accents)
     .toLowerCase()
-    .normalize('NFC')
-    .replace(/[^\p{L}\p{N}\s-]/gu, '') // keep letters (incl. accents), digits, spaces, hyphens
+    .replace(/[^a-z0-9\s-]/g, '')           // keep ascii letters, digits, spaces, hyphens
     .trim()
     .replace(/\s+/g, '-')
 }
