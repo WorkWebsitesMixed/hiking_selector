@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 
 const ADMIN_TOKEN = import.meta.env.VITE_ADMIN_TOKEN
@@ -197,8 +198,10 @@ async function syncSheets(setPhase, setResult) {
 }
 
 export default function AdminSync() {
-  const params  = new URLSearchParams(window.location.search)
-  const isAdmin = ADMIN_TOKEN && params.get('admin') === ADMIN_TOKEN
+  // HashRouter keeps the query string after the "#", so read it via the
+  // router rather than window.location.search. URL: /#/admin?admin=<token>
+  const [searchParams] = useSearchParams()
+  const isAdmin = ADMIN_TOKEN && searchParams.get('admin') === ADMIN_TOKEN
 
   const [phase,  setPhase]  = useState('idle')   // idle | fetching | photos | upserting | pruning | done | error
   const [result, setResult] = useState(null)
